@@ -102,9 +102,12 @@ jobs:
           
           echo "Building kernel version: $KERNEL_VERSION"
           
-          # Use rebuild.sh to build the kernel
-          # The script expects to be run from the resources directory
-          ./rebuild.sh kernels $KERNEL_VERSION
+          # The rebuild.sh script uses Docker internally, so we need to run it with proper permissions
+          # It also expects to install dependencies, so we'll run it with sudo
+          sudo ./rebuild.sh kernels $KERNEL_VERSION
+          
+          # Fix permissions on the build directory so we can access it
+          sudo chown -R $USER:$USER build/
           
           # The kernel will be built in resources/build/kernel/
           echo "Checking built kernel..."

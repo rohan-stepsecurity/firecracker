@@ -1,0 +1,271 @@
+name: Build Firecracker Kernel with BTF
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config'
+      - '.github/workflows/build-kernel-btf.yml'
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: 'Kernel version to build (5.10, 5.10-no-acpi, or 6.1)'
+        required: false
+        default: '6.1'
+        type: choice
+        options:
+          - '6.1'
+          - '5.10'
+          - '5.10-no-acpi'
+
+jobs:
+  build-kernel:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Firecracker repository
+        uses: actions/checkout@v4
+        with:
+          repository: ashishkurmi/firecracker
+          ref: main
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            liblz4-tool \
+            git \
+            bc \
+            kmod \
+            cpio \
+            python3 \
+            python3-pip \
+            dwarves \
+            zstd \
+            pahole \
+            wget \
+            docker.io
+          
+          # Ensure docker is running
+          sudo systemctl start docker
+          sudo usermod -aG docker $USER
+
+      - name: Update kernel config with BTF support
+        run: |
+          KERNEL_VERSION="${{ github.event.inputs.kernel_version || '6.1' }}"
+          CONFIG_FILE="resources/guest_configs/microvm-kernel-ci-x86_64-${KERNEL_VERSION}.config"
+          
+          # Backup original config
+          cp $CONFIG_FILE ${CONFIG_FILE}.backup
+          
+          # Enable BTF support in the config file
+          echo "Updating kernel config to enable BTF..."
+          
+          # Remove any existing BTF config lines (in case they're disabled)
+          sed -i '/CONFIG_DEBUG_INFO_BTF/d' $CONFIG_FILE
+          sed -i '/CONFIG_DEBUG_INFO_DWARF/d' $CONFIG_FILE
+          sed -i '/CONFIG_DEBUG_INFO=/d' $CONFIG_FILE
+          
+          # Add BTF support configuration
+          cat >> $CONFIG_FILE << 'EOF'
+          
+          # BTF Support for eBPF CO-RE
+          CONFIG_DEBUG_INFO=y
+          CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT=y
+          CONFIG_DEBUG_INFO_BTF=y
+          CONFIG_DEBUG_INFO_BTF_MODULES=y
+          
+          # Additional BPF features for security monitoring
+          CONFIG_BPF_LSM=y
+          CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,bpf"
+          CONFIG_FTRACE=y
+          CONFIG_FUNCTION_TRACER=y
+          CONFIG_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_UPROBE_EVENTS=y
+          EOF
+          
+          echo "Config file updated:"
+          grep -E "CONFIG_DEBUG_INFO|CONFIG_BPF" $CONFIG_FILE | tail -20
+
+      - name: Build kernel using rebuild.sh
+        run: |
+          cd resources
+          
+          # Set the kernel version to build
+          KERNEL_VERSION="${{ github.event.inputs.kernel_version || '6.1' }}"
+          
+          echo "Building kernel version: $KERNEL_VERSION"
+          
+          # Use rebuild.sh to build the kernel
+          # The script expects to be run from the resources directory
+          ./rebuild.sh kernels $KERNEL_VERSION
+          
+          # The kernel will be built in resources/build/kernel/
+          echo "Checking built kernel..."
+          find build/kernel -name "vmlinux*" -type f -ls
+
+      - name: Verify BTF in built kernel
+        run: |
+          cd resources
+          KERNEL_VERSION="${{ github.event.inputs.kernel_version || '6.1' }}"
+          
+          # Find the built kernel
+          KERNEL_PATH=$(find build/kernel -name "vmlinux-*${KERNEL_VERSION}*" -type f | head -1)
+          
+          if [ -z "$KERNEL_PATH" ]; then
+            echo "❌ No kernel found!"
+            exit 1
+          fi
+          
+          echo "Found kernel at: $KERNEL_PATH"
+          ls -lah "$KERNEL_PATH"
+          
+          # Check if BTF section exists in the kernel
+          if readelf -S "$KERNEL_PATH" 2>/dev/null | grep -q ".BTF"; then
+            echo "✅ BTF section found in kernel!"
+            readelf -S "$KERNEL_PATH" | grep BTF
+          else
+            echo "⚠️ BTF section might not be in the final kernel"
+            echo "Checking for BTF in the build directory..."
+            
+            # Look for vmlinux in the actual kernel source
+            KERNEL_SRC_DIR=$(find build/kernel -name "vmlinux" -path "*/linux-*" -type f | head -1)
+            if [ -n "$KERNEL_SRC_DIR" ]; then
+              echo "Checking source vmlinux: $KERNEL_SRC_DIR"
+              if readelf -S "$KERNEL_SRC_DIR" 2>/dev/null | grep -q ".BTF"; then
+                echo "✅ BTF found in source vmlinux"
+                readelf -S "$KERNEL_SRC_DIR" | grep BTF
+              fi
+            fi
+          fi
+          
+          # Extract BTF if bpftool is available
+          if command -v bpftool &> /dev/null; then
+            echo "Attempting to extract BTF data..."
+            bpftool btf dump file "$KERNEL_PATH" format raw > vmlinux.btf 2>/dev/null || true
+            if [ -s vmlinux.btf ]; then
+              echo "✅ BTF data extracted successfully"
+              ls -lah vmlinux.btf
+            fi
+          fi
+
+      - name: Package kernel artifacts
+        run: |
+          cd resources
+          KERNEL_VERSION="${{ github.event.inputs.kernel_version || '6.1' }}"
+          
+          # Create artifacts directory
+          mkdir -p ${{ github.workspace }}/artifacts
+          
+          # Find and copy the kernel
+          KERNEL_PATH=$(find build/kernel -name "vmlinux-*${KERNEL_VERSION}*" -type f | head -1)
+          if [ -n "$KERNEL_PATH" ]; then
+            cp "$KERNEL_PATH" ${{ github.workspace }}/artifacts/
+            
+            # Also compress it
+            gzip -9 -c "$KERNEL_PATH" > ${{ github.workspace }}/artifacts/$(basename "$KERNEL_PATH").gz
+          fi
+          
+          # Copy BTF if extracted
+          if [ -f vmlinux.btf ]; then
+            cp vmlinux.btf ${{ github.workspace }}/artifacts/vmlinux-${KERNEL_VERSION}.btf
+          fi
+          
+          # Copy the updated config for reference
+          cp guest_configs/microvm-kernel-ci-x86_64-${KERNEL_VERSION}.config \
+             ${{ github.workspace }}/artifacts/kernel-config-${KERNEL_VERSION}-btf
+          
+          # Create SHA256 checksums
+          cd ${{ github.workspace }}/artifacts
+          sha256sum * > SHA256SUMS
+          
+          echo "=== Artifacts created ==="
+          ls -lah ${{ github.workspace }}/artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firecracker-kernel-${{ github.event.inputs.kernel_version || '6.1' }}-btf
+          path: |
+            artifacts/*
+          retention-days: 30
+
+      - name: Create release
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: kernel-${{ github.event.inputs.kernel_version || '6.1' }}-btf-${{ github.run_number }}
+          name: Firecracker Kernel ${{ github.event.inputs.kernel_version || '6.1' }} with BTF
+          body: |
+            # Firecracker Kernel with BTF Support
+            
+            This kernel is built using the official Firecracker `rebuild.sh` script with BTF (BPF Type Format) support enabled.
+            
+            ## Features
+            - ✅ BTF support for eBPF CO-RE programs
+            - ✅ Built with official Firecracker build process
+            - ✅ BPF LSM support for security monitoring
+            - ✅ Kprobes/Uprobes support
+            - ✅ Based on microvm-kernel-ci-x86_64-${{ github.event.inputs.kernel_version || '6.1' }}.config
+            
+            ## Usage
+            
+            Update your Firecracker configuration to use this kernel:
+            
+            ```yaml
+            firecracker:
+              kernel_image_path: /path/to/vmlinux-${{ github.event.inputs.kernel_version || '6.1' }}-x86_64.bin
+            ```
+            
+            ## Verification
+            
+            After deploying, verify BTF support in your VM:
+            ```bash
+            # Check if BTF is available
+            ls -la /sys/kernel/btf/vmlinux
+            
+            # Your Harden-Runner agent should now work without BTF errors
+            ```
+            
+            ## Build Information
+            - Kernel version: ${{ github.event.inputs.kernel_version || '6.1' }}
+            - Built from commit: ${{ github.sha }}
+            - Build date: ${{ github.run_id }}
+            
+            ## Files
+            - `vmlinux-*.bin` - The kernel binary with BTF
+            - `vmlinux-*.bin.gz` - Compressed kernel
+            - `vmlinux-*.btf` - Extracted BTF data (if available)
+            - `kernel-config-*-btf` - Kernel configuration used
+          files: |
+            artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build summary
+        run: |
+          KERNEL_VERSION="${{ github.event.inputs.kernel_version || '6.1' }}"
+          
+          echo "# Firecracker Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Kernel Version: ${KERNEL_VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### BTF Configuration" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "CONFIG_DEBUG_INFO_BTF|CONFIG_BPF_LSM|CONFIG_BPF_SYSCALL" \
+               resources/guest_configs/microvm-kernel-ci-x86_64-${KERNEL_VERSION}.config | grep -v "^#" >> $GITHUB_STEP_SUMMARY || echo "Config not found"
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -lah artifacts/ >> $GITHUB_STEP_SUMMARY || echo "No artifacts found"
+          echo '```' >> $GITHUB_STEP_SUMMARY

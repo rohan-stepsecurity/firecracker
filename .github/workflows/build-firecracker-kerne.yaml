@@ -94,6 +94,9 @@ jobs:
           CONFIG_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
           CONFIG_UPROBE_EVENTS=y
+          
+          # This was missing and added it now
+          CONFIG_PCI=y
           EOF
           
           echo "Config file updated with BTF support"

@@ -92,7 +92,7 @@ jobs:
           
           # Additional BPF features for security monitoring
           CONFIG_BPF_LSM=y
-          CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,bpf"
+          
           CONFIG_FTRACE=y
           CONFIG_FUNCTION_TRACER=y
           CONFIG_KPROBES=y
@@ -103,7 +103,6 @@ jobs:
           CONFIG_PCI=y
 
           #Another to debug ecapture and armor
-          CONFIG_KPROBE_EVENTS=y
           CONFIG_BPF_JIT=y
           CONFIG_BPF_JIT_ALWAYS_ON=y
           CONFIG_FAULT_INJECTION=y
@@ -114,7 +113,7 @@ jobs:
           CONFIG_SCHEDSTATS=y
 
           EOF
-          
+          # echo "CONFIG_LSM="lockdown,yama,loadpin,safesetid,integrity,bpf""
           echo "Config file updated with BTF support"
           #grep -E "CONFIG_DEBUG_INFO|CONFIG_BPF" kernel.config | tail -20
           cat kernel.config

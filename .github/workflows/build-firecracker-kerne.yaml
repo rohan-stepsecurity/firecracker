@@ -97,6 +97,9 @@ jobs:
           
           # This was missing and added it now
           CONFIG_PCI=y
+
+          #Another to debug tracer
+          CONFIG_BPF_KPROBE_OVERRIDE=y
           EOF
           
           echo "Config file updated with BTF support"

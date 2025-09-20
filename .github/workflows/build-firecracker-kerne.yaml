@@ -108,6 +108,8 @@ jobs:
           CONFIG_FAULT_INJECTION_DEBUG_FS=y
           CONFIG_FUNCTION_ERROR_INJECTION=y
           CONFIG_BPF_KPROBE_OVERRIDE=y
+          CONFIG_SCHED_DEBUG=y
+          CONFIG_SCHEDSTATS=y
 
           EOF
           

@@ -98,8 +98,11 @@ jobs:
           # This was missing and added it now
           CONFIG_PCI=y
 
-          #Another to debug tracer
+          #Another to debug ecapture and armor
           CONFIG_BPF_KPROBE_OVERRIDE=y
+          CONFIG_BPF_JIT=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_FUNCTION_ERROR_INJECTION=y
           EOF
           
           echo "Config file updated with BTF support"
